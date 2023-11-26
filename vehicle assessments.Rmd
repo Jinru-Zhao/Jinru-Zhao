@@ -1,0 +1,568 @@
+
+---
+title: "Individual task3"
+output: html_document
+date: "2023-09-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Install and load packages
+if(!require("pacman"))install.packages("pacman")
+## Loading required package: pacman
+pacman::p_load(readr, dplyr, tidyr,ggplot2,  tidyverse, tidytext, gridExtra, rsample, recipes, parsnip, workflows,glmnet, dials, tune, yardstick)
+```
+
+```{r}
+spend_train<- read_csv("H:/BUSAN302/Individual Task #3/spend_train.csv")
+```
+
+
+#1.Data preparation
+```{r}
+#checking extreme values, not any.
+summary(spend_train)
+#checking duplicate rows, there aren't any.
+sum(duplicated(spend_train))
+
+###Change all -1 into null value
+#co2 (Note: -1 = Data not available)
+spend_train$co2[spend_train$co2 == -1] <- NA
+#feScore (Note: -1 = Data not available)
+spend_train$feScore[spend_train$feScore == -1] <- NA
+#ghgScore (Note: -1 = Data not available)
+spend_train$ghgScore[spend_train$ghgScore == -1] <- NA
+
+#startStop (Note: Y = Yes; N = No; blank indicates older vehicles)
+spend_train$startStop <- ifelse(is.na(spend_train$startStop), "No", ifelse(spend_train$startStop == "Y", "Yes", "No"))
+#sCharger (Note: S = Yes, blank indicates no)
+spend_train$sCharger <- ifelse(is.na(spend_train$sCharger), "No", "Yes")
+#tCharger (Note: TRUE = Yes, blank indicates no)
+spend_train$tCharger<- ifelse(is.na(spend_train$tCharger), "No", "Yes")
+
+```
+
+```{r}
+#check if there are missing values. Massive missing values in 2 deatures: evMotor has 33449 and mfCode has 23133 NAs.
+colSums(is.na(spend_train))
+
+#remove duplicate features(manuafactory code) and make a new df excluding the feature with more than 60% of NAs
+spend_train <- spend_train %>%
+  select(-"mfrCode", -"evMotor", -"feScore", -"ghgScore" ,-"co2")
+#step_rm IN THE recipe
+```
+
+```{r}
+spend_train %>%
+  filter(is.na(atvType))
+
+table(spend_train$atvType) #group none
+```
+
+
+```{r}
+###Check whether we need to log transforming the data
+#Select only the numeric columns
+numeric_spend_train <- spend_train[, sapply(spend_train, is.numeric)]
+
+# Create histograms for numeric columns
+for (col in colnames(numeric_spend_train)) {
+  hist(numeric_spend_train[[col]], main=paste("Histogram of", col), xlab=col, ylab="Frequency")
+}
+```
+
+
+```{r}
+#Define the recipe
+spend_recipe <- recipe(saving_spend ~ . , data = spend_train) %>%
+  update_role(id, new_role = "ID vairbale")%>%
+  step_mutate(cylinders = ifelse(is.na(cylinders), 0,cylinders),
+              displ = ifelse(is.na(displ), 0,displ ),
+              atvType = ifelse(is.na(atvType), "None",atvType))%>%
+ 
+  step_log(all_numeric_predictors(), offset = 1, base = 10) %>% # linear regression, assume that the residuals are normally distributed. Log-transforming skewed variables can help meet this assumption.
+  #applies a common logarithmic transformation with a base of 10 to all numeric predictor variables in your data, adding an offset of 1 to each value to ensure that the transformation is well-defined, even if the original data contains zeros.
+  step_zv(all_predictors())%>%
+  step_normalize(all_numeric_predictors()) %>% #standardize the numeric variables
+  step_pca(all_numeric_predictors(), num_comp = 10) %>% # Define recipe with pca on all numeric predictor variables, reducing them to 10 principal components. Reducing dimensionality with PCA can help capture the most important information while reducing noise and multicollinearity.
+  step_other(all_nominal(), -id, threshold = 0.05, other = "Other") %>% #change the "Other" into "Rare" if has error #too many categories with one or two observation so combining those small categories.(5% of the observation assigned to "other")
+  step_novel(all_nominal(), -id)%>%  #Without it, factors only expecting A,B,C, but we expect to see new category in test dataset
+  step_dummy(all_nominal(), -id) #For each nominal (categorical) variable in your dataset (except Id), it converts the categorical variable into a set of binary indicator variables
+ 
+tidy(spend_recipe)
+#check the recipe is working
+
+check <- spend_recipe %>% prep(spend_train) %>% juice()
+summary(check)
+
+```
+
+
+
+```{r}
+# PCA result
+pca_result <- spend_recipe %>%
+  prep(spend_train)
+
+## Component loading
+pca_result %>%
+  tidy(number = 5, type = "coef") %>%
+  pivot_wider(id_cols = terms, names_from = component)
+```
+
+
+```{r}
+pca_result %>%
+  tidy(number = 5, type = "coef") %>%
+  filter(component %in% paste0("PC", 1:5)) %>%
+  group_by(component) %>%
+  slice_max(order_by = value, n = 6) %>%
+  ungroup() %>%
+  ggplot(aes(x = abs(value), y = reorder_within(x = terms, by = abs(value), within = component), fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~ component, scales = "free") +
+  scale_y_reordered() +
+  labs(x = "Component loadings", y = NULL)
+
+
+```
+
+```{r}
+## Variance explained
+pca_result %>%
+  tidy(number = 5, type = "variance") %>%
+  pivot_wider(id_cols = terms, names_from = component)
+```
+
+```{r}
+pca_result %>%
+  tidy(number = 5, type = "variance") %>% #number 6 is the number of line of pca() in the recipe.
+  filter(terms == "variance") %>%
+  ggplot(mapping = aes(x = component, y = value)) +
+  geom_point(colour = "red") +
+  geom_path(colour = "red") +
+  ylab("Eigenvalue")
+```
+
+```{r}
+pca_result %>%
+  tidy(number = 5, type = "variance") %>%
+  filter(terms == "percent variance") %>%
+  ggplot(mapping = aes(x = component, y = value)) +
+  geom_point(colour = "red") +
+  geom_path(colour = "red") +
+  geom_col(fill = "midnightblue", alpha = 0.7) +
+  ylab("Percentage of total variance")
+
+```
+
+
+```{r}
+# Update recipe
+spend_recipe$steps[[5]] <- update(spend_recipe$steps[[5]], num_comp = 6) #6 is how many PC to keep
+```
+
+
+```{r}
+
+#Combine recipe with model into the workflow
+# Create model object
+lm <- linear_reg() %>%
+  set_engine("glmnet") %>%
+  set_args(mixture = tune(),
+           penalty = tune()) %>%
+  set_mode("regression")
+
+# Set the workflow
+lm_workflow <- workflow() %>%
+  add_recipe(spend_recipe) %>%
+  add_model(lm)
+
+#Set up cross-validation
+set.seed(302)
+spend_cv <- vfold_cv(spend_train, v=10)
+
+# Tuning hyperparameters
+set.seed(302)
+lm_tune <- lm_workflow %>%
+  tune_grid(resamples = spend_cv,
+            grid = 10,
+            metrics = metric_set(rmse,rsq))
+#summarize the performance metrics
+lm_tune %>%
+  collect_metrics()
+
+#store optimal set of hyperparameter values
+best_hyperparam <- lm_tune %>%
+  select_best(metric = "rmse")
+
+# Finalise the workflow
+lm_workflow <- lm_workflow %>%
+  finalize_workflow(best_hyperparam)
+
+```
+
+
+```{r}
+# 1. Fit model and evaluate performance
+
+spend_finalmodel <- lm_workflow %>%
+  fit(spend_train)
+
+#predict values
+spend_train_pred <- predict(spend_finalmodel, new_data = spend_train) %>%
+  bind_cols(spend_train)
+
+#Evaluate performance
+spend_train_pred %>%
+  ggplot(aes(x = .pred, y = saving_spend)) +
+  geom_point(alpha = 0.25) +
+  geom_abline(intercept = 0, slope = 1, colour = "red") +
+  labs(title = "Training", x = "Predicted", y = "Actual")
+
+```
+
+```{r}
+spend_train_pred%>%
+  metrics(saving_spend, .pred)
+```
+
+
+```{r}
+spend_test<- read_csv("H:/BUSAN302/Individual Task #3/spend_test.csv")
+
+```
+
+
+```{r}
+###Change all -1 into null value
+#co2 (Note: -1 = Data not available)
+spend_test$co2[spend_test$co2 == -1] <- NA
+#feScore (Note: -1 = Data not available)
+spend_test$feScore[spend_test$feScore == -1] <- NA
+#ghgScore (Note: -1 = Data not available)
+spend_test$ghgScore[spend_test$ghgScore == -1] <- NA
+
+#startStop (Note: Y = Yes; N = No; blank indicates older vehicles)
+spend_test$startStop <- ifelse(is.na(spend_test$startStop), "No", ifelse(spend_train$startStop == "Y", "Yes", "No"))
+#sCharger (Note: S = Yes, blank indicates no)
+spend_test$sCharger <- ifelse(is.na(spend_test$sCharger), "No", "Yes")
+#tCharger (Note: TRUE = Yes, blank indicates no)
+spend_test$tCharger<- ifelse(is.na(spend_test$tCharger), "No", "Yes")
+```
+
+```{r}
+spend_test <- spend_test %>%
+  select(-"mfrCode", -"evMotor", -"feScore", -"ghgScore" ,-"co2")
+```
+
+```{r}
+
+spend_testmodel <- lm_workflow %>%
+  fit(spend_test)
+
+#predict values
+spend_test_pred <- predict(spend_testmodel, new_data = spend_test) %>%
+  bind_cols(spend_test)
+
+#Evaluate performance
+spend_test_pred %>%
+  ggplot(aes(x = .pred, y = saving_spend)) +
+  geom_point(alpha = 0.25) +
+  geom_abline(intercept = 0, slope = 1, colour = "red") +
+  labs(title = "Testing", x = "Predicted", y = "Actual")
+```
+
+
+```{r}
+spend_test_pred%>%
+  metrics(saving_spend, .pred)
+```
+
+
+#Q3 use logistic regressionn for predicting whether a vehicle should obtain SmartWay certification as the response variable is categorical.
+
+```{r}
+
+cert_train<- read_csv("H:/BUSAN302/Individual Task #3/cert_train.csv")
+```
+
+
+```{r}
+###Data wrangling for cert_train.
+cert_train$co2[cert_train$co2 == -1] <- NA
+cert_train$feScore[cert_train$feScore == -1] <- NA
+cert_train$ghgScore[cert_train$ghgScore == -1] <- NA
+
+#startStop (Note: Y = Yes; N = No; blank indicates older vehicles)
+cert_train$startStop <- ifelse(is.na(cert_train$startStop), "No", ifelse(cert_train$startStop == "Y", "Yes", "No"))
+#sCharger (Note: S = Yes, blank indicates no)
+cert_train$sCharger <- ifelse(is.na(cert_train$sCharger), "No", "Yes")
+#tCharger (Note: TRUE = Yes, blank indicates no)
+cert_train$tCharger<- ifelse(is.na(cert_train$tCharger), "No", "Yes")
+
+```
+
+
+
+```{r}
+cert_train %>%
+  filter(is.na(sCharger))
+
+table(cert_train$sCharger) #group none
+```
+
+
+```{r}
+colSums(is.na(cert_train))
+cert_train <- cert_train %>%
+  select(-"mfrCode", -"evMotor", -"feScore", -"ghgScore" ,-"co2") #These columns have more than 60% missing values.
+
+```
+
+```{r}
+
+#Define the recipe
+cert_recipe <- recipe(cert ~ . , data = cert_train) %>%
+  update_role(id, new_role = "ID vairbale")%>%
+  step_mutate(cylinders = ifelse(is.na(cylinders), 0,cylinders),
+              displ = ifelse(is.na(displ), 0,displ),
+              atvType = ifelse(is.na(atvType), "None", atvType))%>%
+  step_zv(all_predictors())%>% #to remove predictors (columns) with zero variance.
+  #step_log(all_numeric_predictors(), offset = 1, base = 10) %>% # I have zeros in Charge120 so cannot use log.
+  #applies a common logarithmic transformation with a base of 10 to all numeric predictor variables in your data, adding an offset of 1 to each value to ensure that the transformation is well-defined, even if the original data contains zeros.
+ 
+  step_normalize(all_numeric_predictors()) %>% #standardize the numeric variables
+  step_pca(all_numeric_predictors(), num_comp = 10) %>% # Define recipe with pca on all numeric predictor variables, reducing them to 10 principal components. Reducing dimensionality with PCA can help capture the most important information while reducing noise and multicollinearity.
+  step_other(all_nominal_predictors(), -id, threshold = 0.05, other = "Other") %>% #change the "Other" into "Rare" if has error #too many categories with one or two observation so combining those small categories.(5% of the observation assigned to "other")
+  step_novel(all_nominal_predictors(), -id)%>%  #Without it, factors only expecting A,B,C, but we expect to see new category in test dataset
+  step_dummy(all_nominal_predictors(), -id) #For each nominal (categorical) variable in your dataset (except Id), it converts the categorical variable into a set of binary indicator variables
+ 
+tidy(cert_recipe)
+#check the recipe is working
+
+check_cert <- cert_recipe %>% prep(cert_train) %>% juice()
+summary(check_cert)
+
+```
+
+
+```{r}
+
+# PCA result
+pca_result_cert <- cert_recipe %>%
+  prep(cert_train)
+
+## Component loadings
+pca_result_cert %>%
+  tidy(number = 4, type = "coef") %>%
+  pivot_wider(id_cols = terms, names_from = component)
+#interpret every PC1, PC2, PC3 result in the word document in Q4 b).
+#If the value of a variable in the Primary component plots is negative, then the lower this variable is, the stronger effect it has on the PCA.
+```
+
+```{r}
+pca_result_cert %>%
+  tidy(number = 4, type = "coef") %>%
+  filter(component %in% paste0("PC", 1:5)) %>%
+  group_by(component) %>%
+  slice_max(order_by = value, n = 6) %>%
+  ungroup() %>%
+  ggplot(aes(x = abs(value), y = reorder_within(x = terms, by = abs(value), within = component), fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~ component, scales = "free") +
+  scale_y_reordered() +
+  labs(x = "Component loadings", y = NULL)
+```
+
+
+```{r}
+## Variance explained
+pca_result_cert %>%
+  tidy(number = 4, type = "variance") %>%
+  pivot_wider(id_cols = terms, names_from = component)
+```
+
+```{r}
+pca_result_cert %>%
+  tidy(number = 4, type = "variance") %>% #number 5 is the number of line of pca() in the recipe.
+  filter(terms == "variance") %>%
+  ggplot(mapping = aes(x = component, y = value)) +
+  geom_point(colour = "red") +
+  geom_path(colour = "red") +
+  ylab("Eigenvalue")
+```
+
+```{r}
+pca_result_cert %>%
+  tidy(number = 4, type = "variance") %>%
+  filter(terms == "percent variance") %>%
+  ggplot(mapping = aes(x = component, y = value)) +
+  geom_point(colour = "red") +
+  geom_path(colour = "red") +
+  geom_col(fill = "midnightblue", alpha = 0.7) +
+  ylab("Percentage of total variance")
+
+```
+
+
+```{r}
+# Update recipe
+cert_recipe$steps[[4]] <- update(cert_recipe$steps[[4]], num_comp = 7) #7 is how many PC to keep
+```
+
+
+
+```{r}
+###The model type for logistic regression is logistic_reg(). In this demonstration, we will use the "glmnet" engine to build a logistic regression classification model and use LASSO (mixture = 1) for feature selection.
+
+# Create model object
+log_model <- logistic_reg() %>%
+  set_engine("glmnet") %>%
+  set_args(mixture = tune(),
+           penalty = tune())%>%
+  set_mode("classification")
+```
+
+
+```{r}
+# Set the workflow
+log_workflow <- workflow() %>%
+  add_recipe(cert_recipe) %>%
+  add_model(log_model)
+
+#Set up cross-validation
+set.seed(302)
+folds <- vfold_cv(cert_train, v=10)
+
+#tuning hyperparameter and store optimal steps are needed.
+# Tuning hyperparameters
+set.seed(302)
+log_tune <- log_workflow %>%
+  tune_grid(resamples = folds,
+            grid = 10,
+            metrics = metric_set(roc_auc))
+log_tune %>%
+  collect_metrics()
+```
+
+```{r}
+log_tune %>%
+  collect_metrics() %>%
+  ggplot(aes(x = penalty, y = mean)) + 
+  geom_line(linewidth = 0.5, colour = "red") +
+  labs(x = "Penalty", y = "mean")
+```
+#Lower penalty has a higher 
+
+```{r}
+# Store optimal set of hyperparameter values
+opt_hyperparam <- log_tune %>%
+  select_best(metric = "roc_auc")
+
+opt_hyperparam
+
+# Finalise the workflow
+log_workflow <- log_workflow %>%
+  finalize_workflow(opt_hyperparam)
+
+
+```
+
+
+```{r}
+# Fit model
+cert_fit <- log_workflow %>%
+  fit(cert_train)
+
+
+#predict values
+cert_pred<- predict(cert_fit, new_data = cert_train) %>%
+  bind_cols(cert_train)
+
+```
+
+```{r}
+## Confusion matrix
+confusion <- cert_pred %>%
+  mutate(cert = factor(cert))%>%
+  conf_mat(truth = cert, estimate = .pred_class)
+
+confusion
+```
+
+```{r}
+confusion %>%
+  autoplot(type = "heatmap") +
+  scale_fill_gradient2()
+
+
+```
+
+```{r}
+confusion %>%
+  summary()
+```
+
+
+#Apply to the test set
+```{r}
+
+cert_test<- read_csv("H:/BUSAN302/Individual Task #3/cert_test.csv")
+```
+
+
+```{r}
+###Data wrangling for cert_train.
+cert_test$co2[cert_test$co2 == -1] <- NA
+cert_test$feScore[cert_test$feScore == -1] <- NA
+cert_test$ghgScore[cert_test$ghgScore == -1] <- NA
+
+#startStop (Note: Y = Yes; N = No; blank indicates older vehicles)
+cert_test$startStop <- ifelse(is.na(cert_test$startStop), "No", ifelse(cert_test$startStop == "Y", "Yes", "No"))
+#sCharger (Note: S = Yes, blank indicates no)
+cert_test$sCharger <- ifelse(is.na(cert_test$sCharger), "No", "Yes")
+#tCharger (Note: TRUE = Yes, blank indicates no)
+cert_test$tCharger<- ifelse(is.na(cert_test$tCharger), "No", "Yes")
+
+```
+
+
+
+```{r}
+
+cert_train <- cert_test %>%
+  select(-"mfrCode", -"evMotor", -"feScore", -"ghgScore" ,-"co2") #These columns have more than 60% missing values.
+colSums(is.na(cert_test))
+```
+
+```{r}
+
+#predict values
+cert_test_pred<- predict(cert_fit, new_data = cert_test) %>%
+  bind_cols(cert_test)
+
+```
+
+```{r}
+## Confusion matrix
+confusion_test <- cert_test_pred %>%
+  mutate(cert = factor(cert))%>%
+  conf_mat(truth = cert, estimate = .pred_class)
+
+confusion_test
+```
+
+```{r}
+confusion_test %>%
+  autoplot(type = "heatmap") +
+  scale_fill_gradient2()
+
+
+```
+
+```{r}
+confusion_test %>%
+  summary()
+```
+
