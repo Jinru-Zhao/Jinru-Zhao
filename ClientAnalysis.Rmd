@@ -1,0 +1,500 @@
+---
+title: "ClientHotelAnalysis"
+output: html_document
+date: "2023-08-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Install and load packages
+if(!require("pacman"))install.packages("pacman")
+## Loading required package: pacman
+pacman::p_load(readxl, dplyr,writexl, tidyr, stringr, forcats, ggplot2, gridExtra, tidytext, textstem, wordcloud)
+
+```
+
+
+```{r}
+#Import the original data
+df_review <- read_xlsx("H:/BUSAN302/Individual task#2/Review.xlsx")
+str(df_review)
+
+```
+
+```{r}
+#Import data and view rows
+df_offering <- read_xlsx("H:/BUSAN302/Individual task#2/Offering.xlsx")
+str(df_offering)
+```
+
+```{r}
+##get reviews of the client's hotel
+df_class_clienthotel <- df_offering %>%
+  filter(id == 223900)
+df_text_clienthotel <- df_review %>%
+  filter(offering_id %in% df_class_clienthotel$id)
+
+```
+
+```{r}
+#Export df as a excel file
+write_xlsx(df_text_clienthotel, path = "H:/BUSAN302/Individual task#2/ClientHotel.xlsx", col_names = TRUE , format_headers= FALSE)
+```
+
+
+#Text Analysis for competitors
+
+```{r}
+
+client_unigram <- df_text_clienthotel %>%
+  unnest_tokens(output = words,
+                input = text,
+                token = "words",
+                )
+
+client_bigram <- df_text_clienthotel %>%
+  unnest_tokens(output = words,
+                input = text,
+                token = "ngrams", n=2)
+
+#Unigram
+client_unigram %>%
+ count(words, sort = TRUE) %>%
+ head(20)
+```
+
+
+```{r}
+# Unigram - Frequency greater than 20,000
+client_unigram %>%
+  count(words, sort = TRUE) %>%
+  filter(n > 200) %>%
+  ggplot(aes(x = n, y = fct_reorder(words, n))) +
+  geom_col()
+```
+
+
+```{r}
+# Bigram - Top 10
+client_bigram %>%
+ count(words, sort = TRUE) %>%
+ head(10)
+
+```
+
+```{r}
+# Bigram - Frequency greater than 4000
+client_bigram %>%
+  count(words, sort = TRUE) %>%
+  filter(n > 50) %>%
+  ggplot(aes(x = n, y = fct_reorder(words, n))) +
+  geom_col()
+```
+
+
+
+```{r}
+
+# Custom stop word list
+custom_list_client <- c()
+
+# Remove stop words and numbers
+## Unigram
+unigram_client <- client_unigram %>%
+  filter(!words %in% stop_words$word,
+         !words %in% custom_list_client,
+         !str_detect(words, "[0-9]"))
+
+```
+
+```{r}
+#Now recheck the most common words/phrases
+# Unigram - Top 10
+unigram_client %>%
+  count(words, sort = TRUE) %>%
+  head(10)
+```
+
+```{r}
+# Unigram - Frequency
+unigram_client %>%
+  count(words, sort = TRUE) %>%
+  filter(n > 50& n <200) %>%
+  ggplot(aes(x = n, y = fct_reorder(words, n))) +
+  geom_col()
+```
+
+```{r}
+## Bigram
+bigram_client <- client_bigram %>%
+  separate(words, c("word1", "word2"), sep = " ") %>%
+  mutate(bigram = paste(word1, word2, sep = " ")) %>%
+  filter(!word1 %in% stop_words$word,
+         !word2 %in% stop_words$word,
+         !word1 %in% custom_list_client,
+         !word2 %in% custom_list_client,
+         !str_detect(bigram, "[0-9]"))
+```
+
+
+```{r}
+
+# Bigram - Top 10
+bigram_client %>%
+  count(bigram, sort = TRUE) %>%
+  head(10)
+```
+
+```{r}
+# Bigram - Frequency greater than 10
+bigram_client %>%
+  count(bigram, sort = TRUE) %>%
+  filter(n > 10 & n<60) %>%
+  ggplot(aes(x = n, y = fct_reorder(bigram, n))) +
+  geom_col()
+```
+#Stemming and lemmatisation
+
+```{r}
+#Stemming and lemmatisation
+client_stem_lemma <- unigram_client %>%
+  mutate(stem = stem_words(words),
+         lemma = lemmatize_words(words))
+```
+
+```{r}
+# Term frequency
+g7_client<- client_stem_lemma %>%
+  count(words, sort = TRUE) %>%
+  slice_max(order_by = n, n = 40) %>%
+  ggplot(aes(x = n, y = fct_reorder(words, n))) +
+  geom_col() +
+  labs(title = "Original", x = NULL, y = NULL)
+
+g8_client<- client_stem_lemma %>%
+  count(stem, sort = TRUE) %>%
+  slice_max(order_by = n, n = 40) %>%
+  ggplot(aes(x = n, y = fct_reorder(stem, n))) +
+  geom_col() +
+  labs(title = "Stemming", x = NULL, y = NULL)
+
+g9_client<- client_stem_lemma %>%
+  count(lemma, sort = TRUE) %>%
+  slice_max(order_by = n, n = 40) %>%
+  ggplot(aes(x = n, y = fct_reorder(lemma, n))) +
+  geom_col() +
+  labs(title = "Lemmatising", x = NULL, y = NULL)
+
+grid.arrange(g7_client, g8_client, g9_client,
+             ncol = 3)
+```
+#Term Frequency Analysis
+
+```{r}
+
+###word clouds
+# Unigram
+set.seed(302)
+
+unigram_client %>%
+  group_by(words) %>%
+  summarise(count = n()) %>%
+  with(wordcloud(words = words,
+                 freq = count,
+                 max.words = 100,
+                 rot.per = 0.1,
+                 random.order = FALSE,
+                 colors = brewer.pal(8, "Dark2")
+                 ))
+```
+
+```{r}
+# Bigram
+set.seed(302)
+
+bigram_client %>%
+  group_by(bigram) %>%
+  summarise(count = n()) %>%
+  with(wordcloud(words = bigram,
+                 freq = count,
+                 max.words = 50,
+                 rot.per = 0.0001,
+                 random.order = FALSE,
+                 colors = brewer.pal(8, "Dark2")
+                 ))
+```
+
+#Term Frequency-Inverse Document Frequency
+```{r}
+# tf-idf
+client_unigram_tfidf <- unigram_client %>%
+  mutate(document_id = paste0(offering_id,review_id)) %>%
+  count(words, document_id) %>%
+  bind_tf_idf(words, document_id, n)
+
+client_unigram_tfidf %>%
+  arrange(desc(tf_idf))
+```
+
+```{r}
+# Visualise a sample of documents
+set.seed(302)
+comment_sample3 <- client_unigram_tfidf %>%
+  distinct(document_id) %>%
+  sample_n(size = 6, replace = TRUE) %>%
+  pull(document_id)
+
+client_unigram_tfidf %>%
+  filter(document_id %in% comment_sample3) %>%
+  group_by(document_id) %>%
+  slice_max(tf_idf, n = 10) %>%
+  ungroup() %>%
+  ggplot(aes(x = tf_idf, y = fct_reorder(words, tf_idf), fill = document_id)) +
+  geom_col() +
+  facet_wrap(~ document_id,
+             nrow = 2,
+             ncol = 3,
+             scales = "free") +
+  theme(legend.position = "none")
+```
+
+
+#(c) Sentiment analysis
+This dataset was published in Saif M. Mohammad and Peter Turney. (2013), ``Crowdsourcing a Word-Emotion Association Lexicon.'' Computational Intelligence, 29(3): 436-465.
+
+article{mohammad13,
+author = {Mohammad, Saif M. and Turney, Peter D.},
+title = {Crowdsourcing a Word-Emotion Association Lexicon},
+journal = {Computational Intelligence},
+volume = {29},
+number = {3},
+pages = {436-465},
+doi = {10.1111/j.1467-8640.2012.00460.x},
+url = {https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1467-8640.2012.00460.x},
+eprint = {https://onlinelibrary.wiley.com/doi/pdf/10.1111/j.1467-8640.2012.00460.x},
+year = {2013}
+}
+```{r}
+install.packages("textdata")
+# Get sentiment lexicons
+afinn_client <- get_sentiments(lexicon = "afinn")
+bing_client <- get_sentiments(lexicon = "bing")
+nrc_client <- get_sentiments(lexicon = "nrc")
+loughran_client <- get_sentiments(lexicon = "loughran")
+
+head(afinn_client, 10)
+```
+
+```{r}
+head(bing_client, 10)
+```
+```{r}
+head(nrc_client,10)
+```
+```{r}
+head(loughran_client,10)
+```
+
+
+```{r}
+# Sentiment analysis based on AFINN
+unigram_afinn_client <- unigram_client %>%
+  inner_join(afinn_client, by = c("words" = "word"))
+
+## Common words by sentiment
+unigram_afinn_client %>%
+  group_by(words, value) %>%
+  summarise(count = n() , .groups = 'drop') %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  mutate(tone = case_when(value > 0 ~ "Positive",
+                          value < 0 ~ "Negative")) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count), fill = tone)) +
+  geom_col()
+```
+
+```{r}
+g9_client <- unigram_afinn_client %>%
+  group_by(words, value) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(value < 0) %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightcoral") +
+  labs(title = "Negative (AFINN)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+g10_client <- unigram_afinn_client %>%
+  group_by(words, value) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(value > 0) %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightblue") +
+  labs(title = "Positive (AFINN)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+grid.arrange(g9_client, g10_client,
+             ncol = 2)
+```
+
+```{r}
+## Linguistic sentiment of each comment
+comment_afinn_client <- unigram_afinn_client %>%
+  group_by(offering_id, review_id) %>%
+  summarise(value = sum(value), .groups = 'drop') %>%
+  ungroup() %>%
+  group_by(offering_id) %>%
+  summarise(sentiment_afinn_client = mean(value))
+
+# Sentiment analysis based on Bing
+unigram_bing_client <- unigram_client %>%
+  inner_join(bing_client, by = c("words" = "word"))
+
+## Common words by sentiment
+unigram_bing_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count), fill = sentiment)) +
+  geom_col()
+```
+
+```{r}
+g3_client <- unigram_bing_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(sentiment == "negative") %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightcoral") +
+  labs(title = "Negative (Bing)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+g4_client <- unigram_bing_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(sentiment == "positive") %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightblue") +
+  labs(title = "Positive (Bing)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+grid.arrange(g3_client, g4_client,
+             ncol = 2)
+```
+
+```{r}
+## Comparison of AFINN and Bing
+grid.arrange(g9_client, g10_client, g3_client, g4_client,
+             ncol = 2,
+             nrow = 2)
+
+```
+
+```{r}
+## Linguistic sentiment of each comment
+comment_bing_client <- unigram_bing_client %>%
+  group_by(offering_id, review_id, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = sentiment, values_from = count, values_fill = 0) %>%
+  mutate(tone = positive - negative) %>%
+  ungroup() %>%
+  group_by(offering_id) %>%
+  summarise(sentiment_bing = mean(tone))
+
+# Sentiment analysis based on NRC
+unigram_nrc_client <- unigram_client %>%
+  inner_join(nrc_client, by = c("words" = "word"))
+
+## Common words by sentiment
+g5_client <- unigram_nrc_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(sentiment == "anticipation") %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightcoral") +
+  labs(title = "Anticipation (NRC)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+g6_client <- unigram_nrc_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(sentiment == "joy") %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightblue") +
+  labs(title = "Joy (NRC)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+g7_client <- unigram_nrc_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(sentiment == "positive") %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightgreen") +
+  labs(title = "Positive (NRC)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+g8_client <- unigram_nrc_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(sentiment == "sadness") %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightgoldenrod") +
+  labs(title = "Sadness (NRC)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+g9_client <- unigram_nrc_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(sentiment == "surprise") %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightpink") +
+  labs(title = "Surprise (NRC)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+g10_client <- unigram_nrc_client %>%
+  group_by(words, sentiment) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  filter(sentiment == "trust") %>%
+  ungroup() %>%
+  slice_max(count, n = 30) %>%
+  ggplot(aes(x = count, y = fct_reorder(words, count))) +
+  geom_col(fill = "lightgrey") +
+  labs(title = "Trust (NRC)", x = NULL, y = NULL) +
+  theme(legend.position = "none") +
+  coord_cartesian(xlim = c(0, 50))
+
+grid.arrange(g5_client, g6_client, g7_client, g8_client, g9_client, g10_client,
+             ncol = 3,
+             nrow = 2)
+```
+
